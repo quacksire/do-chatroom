@@ -94,8 +94,27 @@ const html = `<!DOCTYPE html>
     button:hover { background-color: #0056b3; }
     button:disabled { background-color: #ccc; cursor: default; }
     
+    .message-container {
+      display: flex;
+      flex-direction: column;
+      max-width: 80%;
+    }
+    .my-message-container {
+      align-self: flex-end;
+      align-items: flex-end;
+    }
+    .other-message-container {
+      align-self: flex-start;
+      align-items: flex-start;
+    }
+    .username {
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 2px;
+      margin-left: 4px;
+      margin-right: 4px;
+    }
     .message { 
-      max-width: 80%; 
       padding: 8px 12px; 
       border-radius: 16px; 
       font-size: 14px; 
@@ -103,13 +122,11 @@ const html = `<!DOCTYPE html>
       word-wrap: break-word;
     }
     .my-message { 
-      align-self: flex-end; 
       background-color: #007aff; 
       color: white; 
       border-bottom-right-radius: 4px;
     }
     .other-message { 
-      align-self: flex-start; 
       background-color: #f0f0f0; 
       color: black; 
       border-bottom-left-radius: 4px;
@@ -123,12 +140,24 @@ const html = `<!DOCTYPE html>
       background: none;
       padding: 0;
     }
+    #user-count {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      font-size: 12px;
+      color: #888;
+      background: rgba(255, 255, 255, 0.8);
+      padding: 4px 8px;
+      border-radius: 12px;
+      border: 1px solid #eee;
+    }
   </style>
 </head>
 <body>
+  <div id="user-count">0 users chatting</div>
   <div id="chat"></div>
   <form id="message-form">
-    <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off">
+    <input type="text" id="message-input" placeholder="Type a message... (/nick to change name)" autocomplete="off">
     <button type="submit">Send</button>
   </form>
 
@@ -141,26 +170,42 @@ const html = `<!DOCTYPE html>
     const form = document.getElementById("message-form");
     const input = document.getElementById("message-input");
     const button = form.querySelector("button");
+    const userCountDiv = document.getElementById("user-count");
 
     let ws;
     let reconnectInterval;
+    let username = localStorage.getItem("chat_username");
+
+    if (!username) {
+      username = "User" + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+      localStorage.setItem("chat_username", username);
+    }
 
     function connect() {
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        addMessage("System", "Connected", "system-message");
+        addSystemMessage(\`Connected as \${username}\`);
         button.disabled = false;
         clearInterval(reconnectInterval);
       };
 
       ws.onmessage = (event) => {
-        addMessage("Stranger", event.data, "other-message");
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "count") {
+            userCountDiv.textContent = \`\${data.count} user\${data.count === 1 ? '' : 's'} chatting\`;
+          } else if (data.type === "chat") {
+            addMessage(data.user, data.text, false);
+          }
+        } catch (e) {
+          console.error("Failed to parse message", e);
+        }
       };
 
       ws.onclose = () => {
         button.disabled = true;
-        addMessage("System", "Disconnected. Reconnecting...", "system-message");
+        addSystemMessage("Disconnected. Reconnecting...");
         if (!reconnectInterval) {
             reconnectInterval = setInterval(connect, 3000);
         }
@@ -173,23 +218,52 @@ const html = `<!DOCTYPE html>
 
     form.addEventListener("submit", (e) => {
       e.preventDefault();
-      const message = input.value.trim();
-      if (message && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(message);
-        addMessage("Me", message, "my-message");
+      const text = input.value.trim();
+      if (!text) return;
+
+      if (text.startsWith("/nick ")) {
+        const newName = text.substring(6).trim();
+        if (newName) {
+          username = newName;
+          localStorage.setItem("chat_username", username);
+          addSystemMessage(\`Username changed to \${username}\`);
+        }
+        input.value = "";
+        return;
+      }
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const message = { user: username, text: text };
+        ws.send(JSON.stringify(message));
+        addMessage(username, text, true);
         input.value = "";
       }
     });
 
-    function addMessage(sender, text, className) {
-      const msgDiv = document.createElement("div");
-      msgDiv.className = \`message \${className}\`;
-      // Don't show sender name for chat bubbles to keep it clean, except maybe system
-      if (className === 'system-message') {
-          msgDiv.textContent = text;
-      } else {
-          msgDiv.textContent = text;
+    function addMessage(user, text, isMe) {
+      const container = document.createElement("div");
+      container.className = \`message-container \${isMe ? 'my-message-container' : 'other-message-container'}\`;
+
+      if (!isMe) {
+        const userDiv = document.createElement("div");
+        userDiv.className = "username";
+        userDiv.textContent = user;
+        container.appendChild(userDiv);
       }
+
+      const msgDiv = document.createElement("div");
+      msgDiv.className = \`message \${isMe ? 'my-message' : 'other-message'}\`;
+      msgDiv.textContent = text;
+      
+      container.appendChild(msgDiv);
+      chatDiv.appendChild(container);
+      chatDiv.scrollTop = chatDiv.scrollHeight;
+    }
+
+    function addSystemMessage(text) {
+      const msgDiv = document.createElement("div");
+      msgDiv.className = "system-message";
+      msgDiv.textContent = text;
       chatDiv.appendChild(msgDiv);
       chatDiv.scrollTop = chatDiv.scrollHeight;
     }

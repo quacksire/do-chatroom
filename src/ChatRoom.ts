@@ -33,36 +33,45 @@ export class ChatRoom extends DurableObject {
     handleSession(webSocket: WebSocket) {
         webSocket.accept();
         this.sessions.add(webSocket);
+        this.broadcastCount();
 
         webSocket.addEventListener("message", async (msg) => {
             try {
                 // Broadcast the message to all other connected clients
-                const data = msg.data;
-                this.broadcast(data as string, webSocket);
+                const data = JSON.parse(msg.data as string);
+                this.broadcast({ type: "chat", ...data }, webSocket);
             } catch (err) {
-                console.error(err);
+                // Handle legacy or malformed messages
+                this.broadcast({ type: "chat", user: "Anonymous", text: msg.data as string }, webSocket);
             }
         });
 
         webSocket.addEventListener("close", () => {
             this.sessions.delete(webSocket);
+            this.broadcastCount();
         });
 
         webSocket.addEventListener("error", () => {
             this.sessions.delete(webSocket);
+            this.broadcastCount();
         });
     }
 
-    broadcast(message: string, sender: WebSocket) {
+    broadcast(message: any, sender?: WebSocket) {
+        const stringified = JSON.stringify(message);
         for (const session of this.sessions) {
             if (session !== sender) {
                 try {
-                    session.send(message);
+                    session.send(stringified);
                 } catch (err) {
                     this.sessions.delete(session);
                 }
             }
         }
+    }
+
+    broadcastCount() {
+        this.broadcast({ type: "count", count: this.sessions.size });
     }
 }
 
