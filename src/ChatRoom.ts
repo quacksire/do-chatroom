@@ -1,11 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 
 export class ChatRoom extends DurableObject {
-    sessions: Set<WebSocket>;
+    sessions: Map<WebSocket, { username: string }>;
 
     constructor(ctx: DurableObjectState, env: Env) {
         super(ctx, env);
-        this.sessions = new Set();
+        this.sessions = new Map();
     }
 
     async fetch(request: Request): Promise<Response> {
@@ -32,34 +32,50 @@ export class ChatRoom extends DurableObject {
 
     handleSession(webSocket: WebSocket) {
         webSocket.accept();
-        this.sessions.add(webSocket);
-        this.broadcastCount();
+        // Temporary placeholder until identified
+        this.sessions.set(webSocket, { username: "Anonymous" });
 
         webSocket.addEventListener("message", async (msg) => {
             try {
-                // Broadcast the message to all other connected clients
                 const data = JSON.parse(msg.data as string);
-                this.broadcast({ type: "chat", ...data }, webSocket);
+
+                if (data.type === "identify") {
+                    const username = this.ensureUniqueName(data.username);
+                    this.sessions.set(webSocket, { username });
+                    webSocket.send(JSON.stringify({ type: "identity", username }));
+                    this.broadcastUserList();
+                } else if (data.type === "nick") {
+                    const newName = data.username;
+                    if (this.isNameTaken(newName)) {
+                        webSocket.send(JSON.stringify({ type: "error", message: "Username is taken" }));
+                    } else {
+                        this.sessions.set(webSocket, { username: newName });
+                        webSocket.send(JSON.stringify({ type: "identity", username: newName }));
+                        this.broadcastUserList();
+                    }
+                } else if (data.type === "chat") {
+                    const user = this.sessions.get(webSocket)?.username || "Anonymous";
+                    this.broadcast({ type: "chat", user, text: data.text }, webSocket);
+                }
             } catch (err) {
-                // Handle legacy or malformed messages
-                this.broadcast({ type: "chat", user: "Anonymous", text: msg.data as string }, webSocket);
+                console.error(err);
             }
         });
 
         webSocket.addEventListener("close", () => {
             this.sessions.delete(webSocket);
-            this.broadcastCount();
+            this.broadcastUserList();
         });
 
         webSocket.addEventListener("error", () => {
             this.sessions.delete(webSocket);
-            this.broadcastCount();
+            this.broadcastUserList();
         });
     }
 
     broadcast(message: any, sender?: WebSocket) {
         const stringified = JSON.stringify(message);
-        for (const session of this.sessions) {
+        for (const [session, _] of this.sessions) {
             if (session !== sender) {
                 try {
                     session.send(stringified);
@@ -70,8 +86,33 @@ export class ChatRoom extends DurableObject {
         }
     }
 
-    broadcastCount() {
-        this.broadcast({ type: "count", count: this.sessions.size });
+    broadcastUserList() {
+        const users = Array.from(this.sessions.values()).map(u => u.username);
+        const message = JSON.stringify({ type: "user_list", users });
+        for (const session of this.sessions.keys()) {
+            try {
+                session.send(message);
+            } catch (err) {
+                this.sessions.delete(session);
+            }
+        }
+    }
+
+    ensureUniqueName(name: string): string {
+        let newName = name;
+        let counter = 1;
+        while (this.isNameTaken(newName)) {
+            newName = `${name}${counter} `;
+            counter++;
+        }
+        return newName;
+    }
+
+    isNameTaken(name: string): boolean {
+        for (const user of this.sessions.values()) {
+            if (user.username === name) return true;
+        }
+        return false;
     }
 }
 

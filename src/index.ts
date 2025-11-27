@@ -150,11 +150,45 @@ const html = `<!DOCTYPE html>
       padding: 4px 8px;
       border-radius: 12px;
       border: 1px solid #eee;
+      cursor: default;
+    }
+    #user-list {
+      display: none;
+      position: absolute;
+      top: 35px;
+      right: 10px;
+      background: white;
+      border: 1px solid #eee;
+      border-radius: 8px;
+      padding: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      font-size: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+      z-index: 100;
+    }
+    #user-count:hover + #user-list, #user-list:hover {
+      display: block;
+    }
+    .user-list-item {
+      padding: 2px 4px;
+      color: #333;
+    }
+    .message {
+      overflow-wrap: anywhere;
+    }
+    .message a {
+      color: white;
+      text-decoration: underline;
+    }
+    .other-message a {
+      color: #007aff;
     }
   </style>
 </head>
 <body>
-  <div id="user-count">0 users chatting</div>
+  <div id="user-count">0 users</div>
+  <div id="user-list"></div>
   <div id="chat"></div>
   <form id="message-form">
     <input type="text" id="message-input" placeholder="Type a message... (/nick to change name)" autocomplete="off">
@@ -171,10 +205,12 @@ const html = `<!DOCTYPE html>
     const input = document.getElementById("message-input");
     const button = form.querySelector("button");
     const userCountDiv = document.getElementById("user-count");
+    const userListDiv = document.getElementById("user-list");
 
     let ws;
     let reconnectInterval;
     let username = localStorage.getItem("chat_username");
+    let lastSender = null;
 
     if (!username) {
       username = "User" + Math.floor(Math.random() * 10000).toString().padStart(4, '0');
@@ -185,7 +221,8 @@ const html = `<!DOCTYPE html>
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        addSystemMessage(\`Connected as \${username}\`);
+        // Send identity immediately
+        ws.send(JSON.stringify({ type: "identify", username: username }));
         button.disabled = false;
         clearInterval(reconnectInterval);
       };
@@ -193,10 +230,16 @@ const html = `<!DOCTYPE html>
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.type === "count") {
-            userCountDiv.textContent = \`\${data.count} user\${data.count === 1 ? '' : 's'} chatting\`;
+          if (data.type === "user_list") {
+            updateUserList(data.users);
           } else if (data.type === "chat") {
             addMessage(data.user, data.text, false);
+          } else if (data.type === "identity") {
+            username = data.username;
+            localStorage.setItem("chat_username", username);
+            addSystemMessage(\`You are now known as \${username}\`);
+          } else if (data.type === "error") {
+            addSystemMessage(\`Error: \${data.message}\`);
           }
         } catch (e) {
           console.error("Failed to parse message", e);
@@ -216,6 +259,11 @@ const html = `<!DOCTYPE html>
       };
     }
 
+    function updateUserList(users) {
+      userCountDiv.textContent = \`\${users.length} user\${users.length === 1 ? '' : 's'}\`;
+      userListDiv.innerHTML = users.map(u => \`<div class="user-list-item">\${escapeHtml(u)}</div>\`).join('');
+    }
+
     form.addEventListener("submit", (e) => {
       e.preventDefault();
       const text = input.value.trim();
@@ -224,16 +272,14 @@ const html = `<!DOCTYPE html>
       if (text.startsWith("/nick ")) {
         const newName = text.substring(6).trim();
         if (newName) {
-          username = newName;
-          localStorage.setItem("chat_username", username);
-          addSystemMessage(\`Username changed to \${username}\`);
+          ws.send(JSON.stringify({ type: "nick", username: newName }));
         }
         input.value = "";
         return;
       }
 
       if (ws && ws.readyState === WebSocket.OPEN) {
-        const message = { user: username, text: text };
+        const message = { type: "chat", text: text };
         ws.send(JSON.stringify(message));
         addMessage(username, text, true);
         input.value = "";
@@ -244,16 +290,19 @@ const html = `<!DOCTYPE html>
       const container = document.createElement("div");
       container.className = \`message-container \${isMe ? 'my-message-container' : 'other-message-container'}\`;
 
-      if (!isMe) {
+      // Only show username if different from last sender or if it's been a while (simplified to just sender check)
+      if (!isMe && user !== lastSender) {
         const userDiv = document.createElement("div");
         userDiv.className = "username";
         userDiv.textContent = user;
         container.appendChild(userDiv);
       }
+      
+      lastSender = user;
 
       const msgDiv = document.createElement("div");
       msgDiv.className = \`message \${isMe ? 'my-message' : 'other-message'}\`;
-      msgDiv.textContent = text;
+      msgDiv.innerHTML = linkify(escapeHtml(text));
       
       container.appendChild(msgDiv);
       chatDiv.appendChild(container);
@@ -266,6 +315,18 @@ const html = `<!DOCTYPE html>
       msgDiv.textContent = text;
       chatDiv.appendChild(msgDiv);
       chatDiv.scrollTop = chatDiv.scrollHeight;
+      lastSender = null; // Reset grouping on system message
+    }
+
+    function linkify(text) {
+      const urlRegex = /(https?:\\/\\/[^\\s]+)/g;
+      return text.replace(urlRegex, '<a href="$1" target="_blank">$1</a>');
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
     }
 
     connect();
